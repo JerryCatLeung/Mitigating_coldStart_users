@@ -1,13 +1,13 @@
 #%%
 # Code for analysing and preprocessing of data
-
 #%%
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import sqlite3 as sql
-
+import ast
+from scipy.linalg import svd
 #%%
 def get_data(f_name):
     movies = pd.read_csv(f_name+'movies.csv')
@@ -54,7 +54,6 @@ def create_users_table(df):
         print ("users_data table already exists")
     db.close()
 
-
 def create_ratings_table(df):
     db = sql.connect(os.path.abspath('../Data/Movie.db'))
     cur = db.cursor()
@@ -79,8 +78,6 @@ def Drop_table(t_name):
     cur = db.cursor()
     cur.execute("DROP TABLE if exists "+t_name +";")
     db.close()
-
-
 #%%
 
 movies,users,ratings = get_data('../Data/')
@@ -115,8 +112,72 @@ def analysis_rating():
     db.close()
     return np.asarray(data2)
 
+
+def get_user_movie_rating():
+    db = sql.connect(os.path.abspath('../Data/Movie.db'))
+    cur = db.cursor()
+    cur.execute("select U_id,'{'||group_concat(M_id|| ':' || rating , ',')||'}' as movie_list from ratings_data group by U_id limit 6040;")
+    data = cur.fetchall()
+    db.close()
+    dict = {int(data[i][0]):ast.literal_eval(data[i][1]) for i in range (len(data))}
+
+    data_movies = np.full((6041,3953),0)
+    for keys in dict:
+        data_movies[keys][0] = len(dict[keys])
+        for k in dict[keys]:
+            data_movies[keys][k] = dict[keys][k]
+
+    data_movies = sorted(data_movies, key= lambda entry : entry[0])
+    return dict,data_movies
+
 #%%
-data1= analysis_user()
-data2= analysis_rating()
-# plt.hist(data2)
-# plt.plot(data1[:,0],data1[:,1])
+data,data_movies = get_user_movie_rating()
+cold_users = data_movies[:1000]
+warm_users = data_movies[1000:]
+
+R = cold_users
+user_ratings_mean = np.mean(R, axis = 1)
+R_demeaned = R - user_ratings_mean.reshape(-1, 1)
+from scipy.sparse.linalg import svds
+U,sigma,_ = svds(R_demeaned, k = 50)
+P = np.dot(U,np.diag(sigma))
+
+
+R = warm_users
+user_ratings_mean = np.mean(R, axis = 1)
+R_demeaned = R - user_ratings_mean.reshape(-1, 1)
+_, _, Q = svds(R_demeaned, k = 50)
+
+P.shape
+Q.shape#%%
+lam,alpha = 1,0.1 #change it please
+def g_elo_actual(a,b):
+    if(a>b):
+        return 1
+    if(a==b):
+        return 0.5
+    else:
+        return 0
+def g_logistic(a,b):
+    return 1/(1+np.exp(-(a-b)))
+def g_linear(a,b):
+    return (a-b)
+
+def update(p,i,j,r,f):
+    count_r =  np.count_nonzero(warm_users[:][j]==r)
+    rui = cold_users[i][j]
+    rcap = np.dot((P[i][:]).T,Q[:][j])
+    grad = 2 * Q[i][f] * count_r * (g_linear(rui,r) - g_linear(rcap,r)) + (2 * lam * P[i][f])
+    return (p - grad)
+
+def func(cold_users,P,Q,r_max = 5,k=50):
+    for temp in range(50):
+        for i in range(len(cold_users)):
+            for j in range(len(cold_users[0])):
+                if (cold_users[i][j] != 0):
+                    for r in range(r_max):
+                        for f in range(k):
+                            P[i][f] = update(P[i][f],i,j,r,f)
+    return P
+
+P = func(cold_users,P,Q)
